@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cf 聊天助手 Web版</title>
+    <style>
+        :root {
+            --bg: #121216;
+            --card-bg: #1e1e24;
+            --text: #e0e0e0;
+            --accent: #00E676;
+            --accent-gradient: linear-gradient(135deg, #00E676, #00BFFF);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; }
+        body { background-color: var(--bg); color: var(--text); display: flex; justify-content: center; padding: 20px; min-height: 100vh; }
+        .container { width: 100%; max-width: 600px; display: flex; flex-direction: column; gap: 15px; }
+        .header { display: flex; justify-content: space-between; align-items: center; background: var(--card-bg); padding: 15px 20px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .header h1 { font-size: 18px; color: #fff; }
+        .header select { background: #2a2a33; color: #FFD700; border: 1px solid #444; border-radius: 8px; padding: 6px 12px; font-weight: bold; outline: none; }
+        .input-area { background: var(--card-bg); padding: 20px; border-radius: 16px; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        textarea { width: 100%; height: 120px; background: rgba(0,0,0,0.3); border: 1px solid #333; border-radius: 12px; color: #fff; padding: 12px; font-size: 14px; resize: vertical; outline: none; }
+        textarea:focus { border-color: var(--accent); }
+        .btn-row { display: flex; gap: 10px; }
+        button { cursor: pointer; border: none; border-radius: 10px; font-weight: bold; padding: 12px; transition: all 0.2s; }
+        .btn-primary { flex: 1; background: var(--accent-gradient); color: #000; font-size: 15px; }
+        .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+        .btn-secondary { background: #2a2a33; color: #fff; padding: 12px 20px; }
+        .btn-secondary:hover { background: #3a3a45; }
+        .result-area { background: var(--card-bg); padding: 20px; border-radius: 16px; display: none; flex-direction: column; gap: 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .result-area h3 { color: #fff; font-size: 14px; margin-bottom: 5px; }
+        .metric { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px; }
+        .affinity { color: #00E676; font-weight: bold; }
+        .danger { color: #FFD700; font-weight: bold; }
+        .advice { background: rgba(0,191,255,0.1); border: 1px solid rgba(0,191,255,0.3); color: #00BFFF; padding: 12px; border-radius: 10px; font-size: 13px; }
+        .replies-container { display: flex; flex-direction: column; gap: 10px; }
+        .reply-btn { text-align: left; padding: 15px; border-radius: 12px; font-size: 13px; line-height: 1.5; background: rgba(0,200,120,0.1); border: 1px solid rgba(0,200,120,0.3); color: #00E676; }
+        .reply-btn:hover { background: rgba(0,200,120,0.2); border-color: #00E676; }
+        .reply-btn .prediction { display: block; margin-top: 5px; font-size: 12px; color: #888; font-style: italic; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); justify-content: center; align-items: center; z-index: 100; }
+        .modal-content { background: var(--card-bg); padding: 25px; border-radius: 16px; width: 90%; max-width: 500px; display: flex; flex-direction: column; gap: 15px; }
+        .modal-content input { background: rgba(0,0,0,0.3); border: 1px solid #444; border-radius: 8px; color: #fff; padding: 10px; width: 100%; }
+        .modal-content label { font-size: 13px; color: #aaa; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>💬 Cf Web版</h1>
+            <select id="sessionSelect" onchange="changeSession()"></select>
+            <button class="btn-secondary" onclick="openSettings()">⚙️</button>
+        </div>
+        <div class="input-area">
+            <textarea id="chatInput" placeholder="在此粘贴聊天记录..."></textarea>
+            <div class="btn-row">
+                <button class="btn-primary" onclick="analyze()">🚀 开始分析</button>
+            </div>
+        </div>
+        <div class="result-area" id="resultArea">
+            <div>
+                <h3>📋 局势分析</h3>
+                <p id="surfaceText" style="font-size: 13px; color: #ccc;"></p>
+            </div>
+            <div class="metric">
+                <span class="affinity" id="affinityText">❤️ 好感度: --</span>
+                <span class="danger" id="dangerText">⚠️ 危险等级: --</span>
+            </div>
+            <div class="advice" id="adviceText"></div>
+            <div class="replies-container" id="repliesContainer"></div>
+        </div>
+    </div>
+    <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <h3>API 设置</h3>
+            <label>API 地址</label>
+            <input type="text" id="apiBase" placeholder="https://api.deepseek.com/v1">
+            <label>API Key</label>
+            <input type="password" id="apiKey" placeholder="sk-...">
+            <label>模型名称</label>
+            <input type="text" id="apiModel" placeholder="deepseek-chat">
+            <div class="btn-row" style="margin-top: 10px;">
+                <button class="btn-primary" onclick="saveSettings()">保存</button>
+                <button class="btn-secondary" onclick="closeSettings()">关闭</button>
+            </div>
+        </div>
+    </div>
+    <script>
+        window.onload = async () => {
+            await loadSessions();
+            await loadConfig();
+        };
+        let currentSession = "";
+        async function loadSessions() {
+            const res = await fetch('/api/sessions');
+            const data = await res.json();
+            const select = document.getElementById('sessionSelect');
+            select.innerHTML = '';
+            data.sessions.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s; opt.text = s;
+                select.appendChild(opt);
+            });
+            currentSession = data.current_session;
+            select.value = currentSession;
+        }
+        async function changeSession() {
+            currentSession = document.getElementById('sessionSelect').value;
+        }
+        async function analyze() {
+            const chatText = document.getElementById('chatInput').value.trim();
+            if (!chatText) return alert("请输入聊天记录！");
+            const res = await fetch('/api/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_text: chatText, session_name: currentSession })
+            });
+            const data = await res.json();
+            displayResult(data);
+        }
+        function displayResult(data) {
+            document.getElementById('resultArea').style.display = 'flex';
+            document.getElementById('surfaceText').innerText = data.surface_answer || "分析失败";
+            const affinity = data.affinity_score || 50;
+            const aColor = affinity >= 80 ? '#00E676' : (affinity >= 40 ? '#FFD700' : '#FF5252');
+            document.getElementById('affinityText').innerHTML = `❤️ 好感度: <span style="color:${aColor}">${affinity} / 100</span>`;
+            document.getElementById('dangerText').innerText = `⚠️ 危险等级: ${data.danger_level || 0} / 10`;
+            const advice = data.action_advice || "无";
+            document.getElementById('adviceText').innerText = `💡 行动建议: ${advice}`;
+            const container = document.getElementById('repliesContainer');
+            container.innerHTML = '';
+            (data.replies || []).forEach(r => {
+                const btn = document.createElement('button');
+                btn.className = 'reply-btn';
+                if (r.style === '冒犯型') btn.style.borderColor = '#FF5252';
+                if (r.style === '发疯型' || r.style === '更疯型') btn.style.borderColor = '#CE93D8';
+                btn.innerHTML = `[${r.style}] ${r.text} <span class="prediction">⤷ 预测对方：${r.prediction || '未知'}</span>`;
+                btn.onclick = () => {
+                    navigator.clipboard.writeText(r.text);
+                    btn.innerText = "✅ 已复制！";
+                    setTimeout(() => btn.innerHTML = `[${r.style}] ${r.text} <span class="prediction">⤷ 预测对方：${r.prediction || '未知'}</span>`, 1500);
+                };
+                container.appendChild(btn);
+            });
+        }
+        async function loadConfig() {
+            const res = await fetch('/api/config');
+            const config = await res.json();
+            const providers = config.custom_providers || {};
+            const firstKey = Object.keys(providers)[0];
+            if (firstKey) {
+                document.getElementById('apiBase').value = providers[firstKey].base_url;
+                document.getElementById('apiKey').value = providers[firstKey].api_key;
+                document.getElementById('apiModel').value = providers[firstKey].model;
+            }
+        }
+        function openSettings() { document.getElementById('settingsModal').style.display = 'flex'; }
+        function closeSettings() { document.getElementById('settingsModal').style.display = 'none'; }
+        async function saveSettings() {
+            const base = document.getElementById('apiBase').value;
+            const key = document.getElementById('apiKey').value;
+            const model = document.getElementById('apiModel').value;
+            const res = await fetch('/api/config');
+            const config = await res.json();
+            const firstKey = Object.keys(config.custom_providers)[0];
+            config.custom_providers[firstKey].base_url = base;
+            config.custom_providers[firstKey].api_key = key;
+            config.custom_providers[firstKey].model = model;
+            await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ config_data: config })
+            });
+            alert("配置已保存！");
+            closeSettings();
+        }
+    </script>
+</body>
+</html>
