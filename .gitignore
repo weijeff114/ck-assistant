@@ -1,0 +1,28 @@
+﻿
+# ===== 编译缓存 =====
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+
+# ===== 打包产物 =====
+build/
+dist/
+*.spec
+
+# ===== 压缩包 =====
+*.zip
+*.rar
+*.7z
+
+# ===== 日志与临时输出 =====
+*.log
+*_log.txt
+cf_app_log.txt
+*.tmp
+test_result.txt
+
+# ===== 密钥与配置 =====
+*.env
+.env
+config.json
