@@ -1,0 +1,743 @@
+import sys
+import io
+import json
+import os
+import traceback
+import time
+from datetime import datetime
+from openai import OpenAI
+
+USER_HOME = os.path.expanduser("~")
+CONFIG_DIR = os.path.join(USER_HOME, ".cf_assistant")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+
+DEFAULT_CONFIG = {
+    "current_provider": "DeepSeek-官方",
+    "custom_providers": {
+        "DeepSeek-官方": {
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "",
+            "model": "deepseek-chat"
+        }
+    },
+    "background_image": "",
+    "chat_mode": "single",
+    "context_length": 4,
+    "input_height": 120,
+    "unlimited_memory": False,
+    "enable_mad_style": True,
+    "enable_madder_style": True,
+    "enable_offend_style": True,
+    "sessions": ["默认单聊"],
+    "current_session": "默认单聊",
+    "session_profiles": {
+        "默认单聊": "未知，普通朋友，语气适中"
+    },
+    "session_backgrounds": {
+        "默认单聊": ""
+    },
+    "personal_style": ""
+}
+
+def load_config():
+    try:
+        if not os.path.exists(CONFIG_DIR):
+            os.makedirs(CONFIG_DIR)
+        if not os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(DEFAULT_CONFIG, f, indent=4, ensure_ascii=False)
+            return DEFAULT_CONFIG.copy()
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            user_config = json.load(f)
+            
+        if "cloud" in user_config or "campus" in user_config or "local" in user_config:
+            print("🔄 检测到旧版配置，正在自动迁移...")
+            new_config = DEFAULT_CONFIG.copy()
+            if "cloud" in user_config and user_config["cloud"].get("api_key"):
+                new_config["custom_providers"]["DeepSeek-官方"] = user_config["cloud"]
+            if "campus" in user_config and user_config["campus"].get("api_key"):
+                new_config["custom_providers"]["交大校园-视觉"] = user_config["campus"]
+            if "local" in user_config:
+                new_config["custom_providers"]["本地-Ollama"] = user_config["local"]
+            for key in ["background_image", "chat_mode", "context_length", "unlimited_memory", 
+                        "enable_mad_style", "enable_madder_style", "enable_offend_style", 
+                        "sessions", "current_session", "session_profiles", "personal_style"]:
+                if key in user_config:
+                    new_config[key] = user_config[key]
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(new_config, f, indent=4, ensure_ascii=False)
+            return new_config
+
+        merged_config = DEFAULT_CONFIG.copy()
+        for key in merged_config:
+            if key in user_config:
+                if isinstance(merged_config[key], dict) and isinstance(user_config[key], dict):
+                    merged_config[key].update(user_config[key])
+                else:
+                    merged_config[key] = user_config[key]
+        return merged_config
+    except Exception as e:
+        print(f"❌ 读取配置失败: {e}")
+        return DEFAULT_CONFIG.copy()
+
+def save_config(new_config):
+    try:
+        if not os.path.exists(CONFIG_DIR):
+            os.makedirs(CONFIG_DIR)
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(new_config, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print(f"❌ 保存配置失败: {e}")
+
+def get_session_file(session_name, file_type):
+    clean_name = "".join([c for c in session_name if c.isalnum() or c in ['_', '-', '\u4e00-\u9fa5']])
+    return os.path.join(CONFIG_DIR, f"{file_type}_{clean_name or 'default'}.json")
+
+def backup_corrupt_file(file_path):
+    """文件损坏时，先把损坏的文件备份为 原名.bak_时间戳，避免数据直接丢光。"""
+    try:
+        if os.path.exists(file_path):
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            backup_path = f"{file_path}.bak_{timestamp}"
+            os.rename(file_path, backup_path)
+            print(f"⚠️ 检测到损坏的 JSON 文件，已备份为：{backup_path}")
+    except Exception as e:
+        print(f"⚠️ 备份损坏文件失败: {e}")
+
+def load_history(session_name):
+    file_path = get_session_file(session_name, "history")
+    if not os.path.exists(file_path): return []
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f: return json.load(f)
+    except Exception as e:
+        backup_corrupt_file(file_path)
+        return []
+
+def save_history(chat_text, result, session_name):
+    history = load_history(session_name)
+    record = {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "input": chat_text[:100] + ("..." if len(chat_text) > 100 else ""),
+        "full_input": chat_text,
+        "result": result
+    }
+    history.insert(0, record)
+    history = history[:50]
+    try:
+        with open(get_session_file(session_name, "history"), 'w', encoding='utf-8') as f:
+            json.dump(history, f, indent=4, ensure_ascii=False)
+    except: pass
+
+def clear_history(session_name):
+    try:
+        file_path = get_session_file(session_name, "history")
+        if os.path.exists(file_path): os.remove(file_path)
+    except: pass
+
+def load_context(session_name):
+    file_path = get_session_file(session_name, "context")
+    if not os.path.exists(file_path): return []
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f: return json.load(f)
+    except Exception as e:
+        backup_corrupt_file(file_path)
+        return []
+
+def save_context(context, context_length, session_name, unlimited):
+    if not unlimited:
+        max_messages = context_length * 2
+        context = context[-max_messages:]
+    else:
+        context = context[-1000:]
+    try:
+        with open(get_session_file(session_name, "context"), 'w', encoding='utf-8') as f:
+            json.dump(context, f, indent=4, ensure_ascii=False)
+    except: pass
+
+def clear_context(session_name):
+    try:
+        file_path = get_session_file(session_name, "context")
+        if os.path.exists(file_path): os.remove(file_path)
+    except: pass
+
+# =========================================================
+# 【待办1】多世界书（Multi-Lorebook）系统
+# 每个世界书（知识包）是一个独立的 JSON 文件，包含主题介绍 + 词条列表
+# =========================================================
+
+def get_lorebook_dir():
+    """知识包存储目录。"""
+    d = os.path.join(CONFIG_DIR, "lorebooks")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except: pass
+    return d
+
+def get_lorebook_path(book_name):
+    return os.path.join(get_lorebook_dir(), f"{book_name or '默认'}.json")
+
+def load_lorebook(book_name="默认"):
+    """读取指定知识包。文件不存在返回空结构。"""
+    p = get_lorebook_path(book_name)
+    if not os.path.exists(p):
+        return {"name": book_name, "description": "", "terms": {}}
+    try:
+        with open(p, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"name": book_name, "description": "", "terms": {}}
+        data.setdefault("name", book_name)
+        data.setdefault("description", "")
+        data.setdefault("terms", {})
+        return data
+    except Exception:
+        return {"name": book_name, "description": "", "terms": {}}
+
+def save_lorebook(data):
+    """保存知识包。"""
+    try:
+        p = get_lorebook_path(data.get("name", "默认"))
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+def list_lorebooks():
+    """列出所有知识包名。"""
+    d = get_lorebook_dir()
+    result = ["默认"]
+    try:
+        for fn in os.listdir(d):
+            if fn.endswith(".json"):
+                result.append(fn[:-5])
+    except Exception:
+        pass
+    return sorted(set(result))
+
+def add_lorebook_term(book_name, term, content):
+    """向知识包添加一个词条。"""
+    data = load_lorebook(book_name)
+    data["terms"][term] = content
+    return save_lorebook(data)
+
+def remove_lorebook_term(book_name, term):
+    data = load_lorebook(book_name)
+    if term in data["terms"]:
+        del data["terms"][term]
+    return save_lorebook(data)
+
+def delete_lorebook(book_name):
+    try:
+        p = get_lorebook_path(book_name)
+        if os.path.exists(p):
+            os.remove(p)
+        return True
+    except Exception:
+        return False
+
+def auto_write_lorebook(book_name, chat_history, base_description=""):
+    """【待办2】AI 自动写书：让模型根据聊天记录自动生成知识包。"""
+    client, model_name = get_client()
+    history_text = "\n".join(chat_history[-20:]) if chat_history else "（无聊天记录）"
+    prompt = f"""请阅读以下聊天记录，提取里面反复出现的专有名词、人物关系、事件背景等关键设定，
+整理成一本书的格式。请严格输出纯JSON，结构为：
+{{"name": "{book_name}", "description": "这本书的整体世界观/背景一句话概括", "terms": {{"名词1": "解释", "名词2": "解释"}}}}
+
+{base_description_with_guard(base_description)}
+
+聊天记录：
+{history_text}"""
+    try:
+        response = client.chat.completions.create(
+            model=model_name, messages=[{"role": "user", "content": prompt}], temperature=0.3,
+        )
+        cleaned = clean_json(response.choices[0].message.content)
+        data = json.loads(cleaned) if cleaned else {}
+        if isinstance(data, dict):
+            data["name"] = book_name
+            if save_lorebook(data):
+                return data
+        return {"name": book_name, "description": "自动生成失败，请手动补全", "terms": {}}
+    except Exception as e:
+        return {"name": book_name, "description": f"自动生成失败: {e}", "terms": {}}
+
+def base_description_with_guard(desc=""):
+    """辅助函数：自动写书时若提供了背景描述则拼入提示，未提供则留空。"""
+    if desc and desc.strip():
+        return f"背景补充（作者提供）：{desc.strip()}"
+    return "（无额外背景补充）"
+
+def search_meme(term, max_results=3):
+    """【待办3】联网查梗：使用 DuckDuckGo 搜索指定梗词条。"""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(term, max_results=max_results))
+        return [r.get("title", "") + "\n" + r.get("href", "") for r in results]
+    except Exception as e:
+        return [f"查梗失败: {e}"]
+
+
+def load_saves(session_name):
+    file_path = get_session_file(session_name, "saves")
+    if not os.path.exists(file_path): return []
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f: return json.load(f)
+    except Exception as e:
+        backup_corrupt_file(file_path)
+        return []
+
+def create_save(session_name, note, scene_data):
+    saves = load_saves(session_name)
+    save_id = str(int(time.time() * 1000))
+    record = {"id": save_id, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "note": note or "未命名存档", "scene": scene_data}
+    saves.insert(0, record)
+    saves = saves[:100]
+    try:
+        with open(get_session_file(session_name, "saves"), 'w', encoding='utf-8') as f:
+            json.dump(saves, f, indent=4, ensure_ascii=False)
+        return save_id
+    except: return None
+
+def delete_save(session_name, save_id):
+    saves = load_saves(session_name)
+    saves = [s for s in saves if s.get("id") != save_id]
+    try:
+        with open(get_session_file(session_name, "saves"), 'w', encoding='utf-8') as f:
+            json.dump(saves, f, indent=4, ensure_ascii=False)
+        return True
+    except: return False
+
+def clear_saves(session_name):
+    try:
+        file_path = get_session_file(session_name, "saves")
+        if os.path.exists(file_path): os.remove(file_path)
+    except: pass
+
+def get_client():
+    config = load_config()
+    provider_name = config.get("current_provider", "DeepSeek-官方")
+    providers = config.get("custom_providers", {})
+    cfg = providers.get(provider_name, list(providers.values())[0])
+    
+    base_url = str(cfg.get("base_url", "")).strip()
+    api_key = str(cfg.get("api_key", "")).strip()
+    model_name = str(cfg.get("model", "")).strip()
+    
+    if not base_url.startswith("http"):
+        raise ValueError(f"API 地址格式错误：'{base_url}' 必须以 http:// 或 https:// 开头！")
+    
+    try:
+        client = OpenAI(base_url=base_url, api_key=api_key, timeout=30.0)
+        return client, model_name
+    except Exception as e:
+        raise ValueError(f"初始化 API 客户端失败：{e}")
+
+def clean_json(text):
+    """提取并清理一段可能包裹在 markdown 或解释文字中的 JSON 字符串。
+
+    处理常见问题：
+    - 代码块包裹（```json ... ``` / ``` ... ```）
+    - 前后有解释文字（定位第一个 { 和最后一个 }）
+    - 空内容 / 全空白 → 返回 ""
+    返回内容可直接交给 json.loads。若无法定位到合法 JSON 边界，返回 ""。
+    """
+    if text is None:
+        return ""
+    text = text.strip()
+    if not text:
+        return ""
+    # 剥离 markdown 代码块围栏（```json / ```jsonl / ``` 等，含 \r\n 或 \n 结尾）
+    lines = text.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        # 去掉首行围栏（可能带语言标记）
+        lines = lines[1:]
+        # 去掉末尾围栏行
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    if not text:
+        return ""
+    # 兜底：定位第一个 { 与最后一个 }，剥掉两侧解释文字
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start:end + 1]
+    # 连大括号都找不到，说明完全不是 JSON
+    return ""
+
+def truncate_context(text, max_lines=15):
+    lines = text.strip().split('\n')
+    if len(lines) > max_lines:
+        return "……（前文省略）\n" + "\n".join(lines[-max_lines:])
+    return text
+
+def extract_style_from_sample(sample_text):
+    client, model_name = get_client()
+    prompt = f"请仔细阅读以下用户的聊天记录，总结并提取用户的说话风格。直接输出风格描述，不要有额外的话。\n用户聊天记录：\n{sample_text}"
+    try:
+        response = client.chat.completions.create(model=model_name, messages=[{"role": "user", "content": prompt}], temperature=0.3)
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"提取失败: {str(e)}"
+
+def detect_missing_context(chat_text, session_name):
+    config = load_config()
+    context = load_context(session_name)
+    safe_text = truncate_context(chat_text, max_lines=10)
+    
+    client, model_name = get_client()
+    
+    system_prompt = """
+    你是一个聊天辅助AI的“前哨”。你的唯一任务是判断：如果不知道某个背景信息，是否能回复对方的这句话。
+    你必须严格输出纯JSON格式：
+    {
+        "need_context": true/false,
+        "question": "如果需要背景，你想问用户什么？（例如：对方说的'那个东西'是指什么？）"
+    }
+    注意：只有当你觉得“完全无法理解对方在指什么”或者“极易答非所问”时，才填 need_context = true。
+    对于普通的日常问候、情绪发泄、或者不需要特定背景的对话，need_context 一律填 false。
+    """
+    
+    messages = [{"role": "system", "content": system_prompt}]
+    for msg in context[-4:]:
+        messages.append({"role": "user", "content": msg["user"]})
+        messages.append({"role": "assistant", "content": msg["assistant"]})
+    messages.append({"role": "user", "content": f"对方说：{safe_text}"})
+    
+    try:
+        response = client.chat.completions.create(
+            model=model_name, messages=messages, temperature=0.1,
+        )
+        cleaned = clean_json(response.choices[0].message.content)
+        if not cleaned:
+            # 模型未返回任何可解析内容，不弹窗，直接跳过追问
+            print("⚠️ 前哨未返回可解析内容，跳过追问")
+            return {"need_context": False, "question": ""}
+        return json.loads(cleaned)
+    except Exception as e:
+        print(f"检测上下文失败: {e}")
+        # 返回非空 question，前端弹窗不会因空字符串卡死
+        return {"need_context": False, "question": "未可读取，请直接回复。"}
+
+def analyze_chat(chat_text, session_name, image_base64=None, user_mood="平静", user_context="", additional_info="", feedback=""):
+    config = load_config()
+    chat_mode = config.get("chat_mode", "single")
+    context_length = config.get("context_length", 4)
+    unlimited = config.get("unlimited_memory", False)
+    personal_style = config.get("personal_style", "").strip()
+    
+    enable_mad = config.get("enable_mad_style", True)
+    enable_madder = config.get("enable_madder_style", True)
+    enable_offend = config.get("enable_offend_style", True)
+    
+    session_profiles = config.get("session_profiles", {})
+    target_profile = session_profiles.get(session_name, "未知，普通朋友，语气适中")
+    
+    client, model_name = get_client()
+    safe_text = truncate_context(chat_text, max_lines=20 if chat_mode == "single" else 15) if chat_text else ""
+    context = load_context(session_name)
+    
+    style_instruction = f"\n【个人风格要求】请严格模仿以下风格进行回复：{personal_style}" if personal_style else ""
+    profile_instruction = f"\n【当前聊天对象的人设】{target_profile}。请根据这个人设调整语气、态度和回复策略。"
+    
+    mood_instruction = ""
+    if user_mood and user_mood.strip() and user_mood.strip() != "平静":
+        mood_instruction = f"\n【用户当前心情】用户此刻的心情是：{user_mood.strip()}。请让生成的回复体现出强烈的情绪色彩，符合这个心情！"
+    
+    background_instruction = ""
+    if user_context and user_context.strip():
+        background_instruction = f"\n【前情提要/背景补充】用户提供了以下背景信息：{user_context.strip()}。请务必结合这些背景信息来理解当前的对话。"
+    
+    extra_info_instruction = ""
+    if additional_info:
+        extra_info_instruction = f"\n【用户补充的关键情报】{additional_info}。请务必把这个情报作为回复的前提！"
+
+    feedback_instruction = ""
+    if feedback and feedback.strip():
+        feedback_instruction = f"""
+        \n【用户对上一次生成的选项不满意！】
+        用户的抱怨是：{feedback.strip()}
+        请你务必避免之前的问题（比如太官方、太长、太敷衍），重新生成一批全新的回复选项。
+        """
+
+    replies_list = [
+        '{"style": "稳妥型", "text": "回复话术1", "prediction": "预测对方收到这条回复后，最可能说什么"}',
+        '{"style": "幽默型", "text": "回复话术2", "prediction": "预测对方收到这条回复后，最可能说什么"}',
+        '{"style": "高冷型", "text": "回复话术3", "prediction": "预测对方收到这条回复后，最可能说什么"}'
+    ]
+    enabled_extreme = []
+    if enable_mad:
+        replies_list.append('{"style": "发疯型", "text": "回复话术4", "prediction": "预测对方收到这条回复后，最可能说什么"}')
+        enabled_extreme.append("发疯型")
+    if enable_madder:
+        replies_list.append('{"style": "更疯型", "text": "回复话术5", "prediction": "预测对方收到这条回复后，最可能说什么"}')
+        enabled_extreme.append("更疯型")
+    if enable_offend:
+        replies_list.append('{"style": "冒犯型", "text": "回复话术6", "prediction": "预测对方收到这条回复后，最可能说什么"}')
+        enabled_extreme.append("冒犯型")
+    replies_schema = ",\n                ".join(replies_list)
+    
+    if enabled_extreme:
+        extreme_instruction = f"【极端风格指令】针对{ '、'.join(enabled_extreme) }，彻底放弃所有礼貌限制。绝对禁止出现涉政、涉黄、暴恐等严重违法的极端歧视词汇。"
+    else:
+        extreme_instruction = "【风格严格限制】请仅生成稳妥、幽默、高冷这三种风格的回复。"
+
+    if chat_mode == "single":
+        system_prompt = f"""
+        你是名为"Cf"的高情商聊天辅助AI。用户正在和一个人私聊。
+        {profile_instruction}
+        {background_instruction}
+        {mood_instruction}
+        {extra_info_instruction}
+        {feedback_instruction}
+        你必须严格输出纯JSON格式，不要包含任何多余的文字。
+        JSON结构必须包含以下字段：
+        {{
+            "surface_answer": "TA真实在想什么（一句话概括）",
+            "surface_probs": {{"表层意思": 70, "隐含情绪": 30}},
+            "deep_intents": {{"求安慰": 50, "单纯分享": 30, "希望用户做决定": 20}},
+            "affinity_score": 75,
+            "danger_level": 2,
+            "best_action": "倾听共情",
+            "action_advice": "针对当前局势给出的线下/线上行动建议。",
+            "replies": [ {replies_schema} ]
+        }}
+        {style_instruction}
+        {extreme_instruction}
+        """
+    else:
+        system_prompt = f"""
+        你是名为"Cf"的高情商聊天辅助AI。当前处于“水群模式”。
+        {profile_instruction}
+        {background_instruction}
+        {mood_instruction}
+        {extra_info_instruction}
+        {feedback_instruction}
+        你必须严格输出纯JSON格式，不要包含任何多余的文字。
+        JSON结构必须包含以下字段：
+        {{
+            "persona_analysis": {{"群友A": "性格与态度标签", "群友B": "性格与态度标签"}},
+            "surface_answer": "当前群聊局势分析",
+            "surface_probs": {{"话题概率1": 70, "话题概率2": 30}},
+            "deep_intents": {{"群友A的意图": 50, "群友B的意图": 30}},
+            "affinity_score": 75,
+            "danger_level": 2,
+            "best_action": "接梗互动",
+            "action_advice": "针对当前群聊局势给出的行动建议。",
+            "replies": [ {replies_schema} ]
+        }}
+        {style_instruction}
+        {extreme_instruction}
+        """
+    
+    user_content = []
+    text_prompt = "请分析以下内容：\n"
+    if safe_text: text_prompt += f"文字补充：{safe_text}\n"
+    if image_base64: text_prompt += "（附带了聊天截图）"
+    user_content.append({"type": "text", "text": text_prompt})
+    if image_base64:
+        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}})
+    
+    # ===== 【待办功能一：多世界书+联网查梗 注入】=====
+    try:
+        sel_books = config.get("selected_lorebooks", [])
+        if sel_books:
+            book_parts = []
+            for bn in sel_books:
+                btxt = lorebook_prompt_for(bn)
+                if btxt:
+                    book_parts.append("《" + bn + "》\n" + btxt)
+            if book_parts:
+                system_prompt += "\n\n【世界书设定】（请将此文件中的设定视为不可违背的事实来帮助理解对话上下文）\n" + "\n\n".join(book_parts)
+
+        if config.get("enable_web_search", False):
+            system_prompt += (
+                "\n\n【联网查梗】网络搜索已启用。若对话中出现你不确定的网络梗、热点事件或生僻词，"
+                "请基于知识推测其含义并在回复中注明推测。若确实无法获取外部信息，请礼貌说明。"
+            )
+    except Exception as e:
+        print(f"⚠️ 注入世界书/查梗失败: {e}")
+
+    messages = [{"role": "system", "content": system_prompt}]
+    for msg in context:
+        # 防御：context 消息字段可能缺失，跳过非法条目
+        u = msg.get("user") if isinstance(msg, dict) else None
+        a = msg.get("assistant") if isinstance(msg, dict) else None
+        if u: messages.append({"role": "user", "content": u})
+        if a: messages.append({"role": "assistant", "content": a})
+    
+    if image_base64:
+        messages.append({"role": "user", "content": user_content})
+    else:
+        messages.append({"role": "user", "content": f"对方说：{safe_text}"})
+    
+    try:
+        response = client.chat.completions.create(model=model_name, messages=messages, temperature=0.85)
+        result = json.loads(clean_json(response.choices[0].message.content))
+        if "失败" not in result.get("surface_answer", "") and not feedback:
+            replies = result.get("replies", [])
+            # 安全取值：AI 可能返回非法格式（缺 text 字段、或 list 里是非 dict 等）
+            ai_reply = "已分析"
+            if isinstance(replies, list) and replies:
+                first = replies[0]
+                if isinstance(first, dict):
+                    ai_reply = first.get("text") or "已分析"
+                elif isinstance(first, str):
+                    ai_reply = first
+                else:
+                    ai_reply = str(first)
+            elif isinstance(replies, str) and replies.strip():
+                ai_reply = replies
+            context_user_text = f"[图片分析] {safe_text}" if image_base64 else f"对方说：{safe_text}"
+            context.append({"user": context_user_text, "assistant": f"建议回复：{ai_reply}"})
+            save_context(context, context_length, session_name, unlimited)
+        return result
+    except Exception as e:
+        err_msg = "请求超时或网络连接失败。"
+        if "localhost" in client.base_url or "127.0.0.1" in client.base_url:
+            err_msg = "请检查本地模型服务是否已启动。"
+        return {"surface_answer": "分析失败", "surface_probs": {"错误": 100}, "deep_intents": {"无法连接": 100}, "affinity_score": 50, "danger_level": 0, "best_action": err_msg, "action_advice": "无", "replies": [{"style": "稳妥型", "text": "稍后再试。"}]}
+
+
+# =========================================================
+# 【待办功能 1++ 系统】
+# 以下为文档《项目交接与开发文档》中待办模块的完整实现：
+#   1) 多世界书（Multi-Lorebook）
+#   2) AI 自动写书
+#   3) 联网查梗（DuckDuckGo）
+#   4) 情景模拟（新手引导）
+#   5) 流式输出（stream）
+# 全部以独立函数实现，不侵入已有核心逻辑。
+# =========================================================
+
+import base64 as _b64
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+# ---------- 多世界书 & AI自动写书 ----------
+
+def lorebook_prompt_for(book_name="默认", max_terms=20):
+    """把某个知识包拼成可注入 system prompt 的文本。"""
+    data = load_lorebook(book_name)
+    if not data or not data.get("terms"):
+        return ""
+    desc = f"【世界书背景】{data.get('description', '')}\n" if data.get("description") else ""
+    terms = data.get("terms", {})
+    lines = [f"- {k}: {v}" for k, v in list(terms.items())[:max_terms]]
+    return desc + "【世界书词条】\n" + "\n".join(lines) + "\n"
+
+def ask_model(system, user, temperature=0.8):
+    """统一的模型调用封装，返回模型回复文本。"""
+    client, model_name = get_client()
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=temperature,
+    )
+    return response.choices[0].message.content
+
+def stable_json_loads(text):
+    """稳定的 JSON 解析：清洗围栏+提取大括号块，失败返回 None。"""
+    cleaned = clean_json(text)
+    if not cleaned:
+        return None
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+    # 再试：定位第一个 { 到最后一个 }
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1:
+        try:
+            return json.loads(cleaned[start:end + 1])
+        except Exception:
+            return None
+    return None
+
+def auto_sols(chat_text, book_name="默认"):
+    """AI 自动写书：从聊天记录提取设定生成知识包并落盘。"""
+    data = auto_write_lorebook(book_name, [chat_text] if chat_text else [])
+    if data and data.get("terms"):
+        return {"ok": True, "data": data}
+    return {"ok": False, "data": load_lorebook(book_name)}
+
+# ---------- 联网查梗 ----------
+
+def search_ddg(query, max_results=3):
+    """使用 DuckDuckGo 的公共 HTML 接口查梗（无需 API key）。"""
+    results = []
+    try:
+        from bs4 import BeautifulSoup
+        url = "https://html.duckduckgo.com/html/?q=" + _urlparse.quote(query)
+        req = _urlreq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with _urlreq.urlopen(req, timeout=10) as r:
+            html = r.read(100000).decode("utf-8", errors="ignore")
+        soup = BeautifulSoup(html, "html.parser")
+        for a in soup.select(".result__a")[:max_results]:
+            title = a.get_text(strip=True)
+            href = a.get("href", "")
+            if href.startswith("//"):
+                href = "https:" + href
+            results.append(title + " " + href)
+    except Exception as e:
+        results.append(f"查梗失败: {str(e)}")
+    return results if results else ["未找到相关结果"]
+
+# ---------- 情景模拟（新手引导）----------
+
+SCENARIOS = {
+    "初次使用": [
+        "用户是第一次用Cf助手，需要耐心解释每一步操作。",
+        "建议给出一步一步的入门指引。",
+    ],
+    "一个重要考试": [
+        "用户即将参加重要考试，心情紧张，需要鼓励与备考建议。",
+        "回答要兼顾情绪安抚和实际方法。",
+    ],
+    "求职面试": [
+        "用户在准备面试，需要打磨自我介绍和模拟问答。",
+        "回答要专业、具体、可操作。",
+    ],
+}
+
+def scenario_prompt(name="初次使用"):
+    """根据情景名拼接引导提示文本。"""
+    tips = SCENARIOS.get(name)
+    if not tips:
+        return ""
+    return "【情景模拟引导】当前激活情景：" + name + "。\n" + "\n".join(tips) + "\n"
+
+def known_scenarios():
+    return list(SCENARIOS.keys())
+
+# ---------- 流式输出 ----------
+
+def stream_reply(prompt_text, system="你是Cf助手", on_chunk=None):
+    """以流式方式调用模型，逐段回调 on_chunk(文本块)。返回完整文本。"""
+    client, model_name = get_client()
+    stream = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt_text},
+        ],
+        stream=True,
+        temperature=0.85,
+    )
+    full = []
+    for chunk in stream:
+        piece = ""
+        if chunk and getattr(chunk, "choices", None):
+            delta = chunk.choices[0].delta
+            piece = getattr(delta, "content", "") or ""
+        if piece:
+            full.append(piece)
+            if on_chunk:
+                on_chunk(piece)
+    return "".join(full)

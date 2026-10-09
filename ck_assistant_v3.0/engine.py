@@ -7,102 +7,10 @@ import time
 from datetime import datetime
 from openai import OpenAI
 
-USER_HOME = os.path.expanduser("~")
-CONFIG_DIR = os.path.join(USER_HOME, ".cf_assistant")
-CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
-
-DEFAULT_CONFIG = {
-    "current_provider": "DeepSeek-官方",
-    "custom_providers": {
-        "DeepSeek-官方": {
-            "base_url": "https://api.deepseek.com/v1",
-            "api_key": "",
-            "model": "deepseek-chat"
-        }
-    },
-    "background_image": "",
-    "chat_mode": "single",
-    "context_length": 4,
-    "input_height": 120,
-    "unlimited_memory": False,
-    "enable_mad_style": True,
-    "enable_madder_style": True,
-    "enable_offend_style": True,
-    "sessions": ["默认单聊"],
-    "current_session": "默认单聊",
-    "session_profiles": {
-        "默认单聊": "未知，普通朋友，语气适中"
-    },
-    "session_backgrounds": {
-        "默认单聊": ""
-    },
-    "personal_style": ""
-}
-
-def load_config():
-    try:
-        if not os.path.exists(CONFIG_DIR):
-            os.makedirs(CONFIG_DIR)
-        if not os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(DEFAULT_CONFIG, f, indent=4, ensure_ascii=False)
-            return DEFAULT_CONFIG.copy()
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            user_config = json.load(f)
-            
-        if "cloud" in user_config or "campus" in user_config or "local" in user_config:
-            print("🔄 检测到旧版配置，正在自动迁移...")
-            new_config = DEFAULT_CONFIG.copy()
-            if "cloud" in user_config and user_config["cloud"].get("api_key"):
-                new_config["custom_providers"]["DeepSeek-官方"] = user_config["cloud"]
-            if "campus" in user_config and user_config["campus"].get("api_key"):
-                new_config["custom_providers"]["交大校园-视觉"] = user_config["campus"]
-            if "local" in user_config:
-                new_config["custom_providers"]["本地-Ollama"] = user_config["local"]
-            for key in ["background_image", "chat_mode", "context_length", "unlimited_memory", 
-                        "enable_mad_style", "enable_madder_style", "enable_offend_style", 
-                        "sessions", "current_session", "session_profiles", "personal_style"]:
-                if key in user_config:
-                    new_config[key] = user_config[key]
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(new_config, f, indent=4, ensure_ascii=False)
-            return new_config
-
-        merged_config = DEFAULT_CONFIG.copy()
-        for key in merged_config:
-            if key in user_config:
-                if isinstance(merged_config[key], dict) and isinstance(user_config[key], dict):
-                    merged_config[key].update(user_config[key])
-                else:
-                    merged_config[key] = user_config[key]
-        return merged_config
-    except Exception as e:
-        print(f"❌ 读取配置失败: {e}")
-        return DEFAULT_CONFIG.copy()
-
-def save_config(new_config):
-    try:
-        if not os.path.exists(CONFIG_DIR):
-            os.makedirs(CONFIG_DIR)
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(new_config, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        print(f"❌ 保存配置失败: {e}")
-
-def get_session_file(session_name, file_type):
-    clean_name = "".join([c for c in session_name if c.isalnum() or c in ['_', '-', '\u4e00-\u9fa5']])
-    return os.path.join(CONFIG_DIR, f"{file_type}_{clean_name or 'default'}.json")
-
-def backup_corrupt_file(file_path):
-    """文件损坏时，先把损坏的文件备份为 原名.bak_时间戳，避免数据直接丢光。"""
-    try:
-        if os.path.exists(file_path):
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            backup_path = f"{file_path}.bak_{timestamp}"
-            os.rename(file_path, backup_path)
-            print(f"⚠️ 检测到损坏的 JSON 文件，已备份为：{backup_path}")
-    except Exception as e:
-        print(f"⚠️ 备份损坏文件失败: {e}")
+from engine_config import (
+    USER_HOME, CONFIG_DIR, CONFIG_FILE, DEFAULT_CONFIG,
+    load_config, save_config, get_session_file, backup_corrupt_file,
+)
 
 def load_history(session_name):
     file_path = get_session_file(session_name, "history")
@@ -540,6 +448,26 @@ def analyze_chat(chat_text, session_name, image_base64=None, user_mood="平静",
     if image_base64:
         user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}})
     
+    # ===== 【待办功能一：多世界书+联网查梗 注入】=====
+    try:
+        sel_books = config.get("selected_lorebooks", [])
+        if sel_books:
+            book_parts = []
+            for bn in sel_books:
+                btxt = lorebook_prompt_for(bn)
+                if btxt:
+                    book_parts.append("《" + bn + "》\n" + btxt)
+            if book_parts:
+                system_prompt += "\n\n【世界书设定】（请将此文件中的设定视为不可违背的事实来帮助理解对话上下文）\n" + "\n\n".join(book_parts)
+
+        if config.get("enable_web_search", False):
+            system_prompt += (
+                "\n\n【联网查梗】网络搜索已启用。若对话中出现你不确定的网络梗、热点事件或生僻词，"
+                "请基于知识推测其含义并在回复中注明推测。若确实无法获取外部信息，请礼貌说明。"
+            )
+    except Exception as e:
+        print(f"⚠️ 注入世界书/查梗失败: {e}")
+
     messages = [{"role": "system", "content": system_prompt}]
     for msg in context:
         # 防御：context 消息字段可能缺失，跳过非法条目
