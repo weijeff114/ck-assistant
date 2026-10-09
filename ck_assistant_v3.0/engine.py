@@ -93,12 +93,25 @@ def get_session_file(session_name, file_type):
     clean_name = "".join([c for c in session_name if c.isalnum() or c in ['_', '-', '\u4e00-\u9fa5']])
     return os.path.join(CONFIG_DIR, f"{file_type}_{clean_name or 'default'}.json")
 
+def backup_corrupt_file(file_path):
+    """文件损坏时，先把损坏的文件备份为 原名.bak_时间戳，避免数据直接丢光。"""
+    try:
+        if os.path.exists(file_path):
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            backup_path = f"{file_path}.bak_{timestamp}"
+            os.rename(file_path, backup_path)
+            print(f"⚠️ 检测到损坏的 JSON 文件，已备份为：{backup_path}")
+    except Exception as e:
+        print(f"⚠️ 备份损坏文件失败: {e}")
+
 def load_history(session_name):
     file_path = get_session_file(session_name, "history")
     if not os.path.exists(file_path): return []
     try:
         with open(file_path, 'r', encoding='utf-8') as f: return json.load(f)
-    except: return []
+    except Exception as e:
+        backup_corrupt_file(file_path)
+        return []
 
 def save_history(chat_text, result, session_name):
     history = load_history(session_name)
@@ -126,7 +139,9 @@ def load_context(session_name):
     if not os.path.exists(file_path): return []
     try:
         with open(file_path, 'r', encoding='utf-8') as f: return json.load(f)
-    except: return []
+    except Exception as e:
+        backup_corrupt_file(file_path)
+        return []
 
 def save_context(context, context_length, session_name, unlimited):
     if not unlimited:
@@ -150,7 +165,9 @@ def load_saves(session_name):
     if not os.path.exists(file_path): return []
     try:
         with open(file_path, 'r', encoding='utf-8') as f: return json.load(f)
-    except: return []
+    except Exception as e:
+        backup_corrupt_file(file_path)
+        return []
 
 def create_save(session_name, note, scene_data):
     saves = load_saves(session_name)
@@ -199,10 +216,37 @@ def get_client():
         raise ValueError(f"初始化 API 客户端失败：{e}")
 
 def clean_json(text):
+    """提取并清理一段可能包裹在 markdown 或解释文字中的 JSON 字符串。
+
+    处理常见问题：
+    - 代码块包裹（```json ... ``` / ``` ... ```）
+    - 前后有解释文字（定位第一个 { 和最后一个 }）
+    - 空内容 / 全空白 → 返回 ""
+    返回内容可直接交给 json.loads。若无法定位到合法 JSON 边界，返回 ""。
+    """
+    if text is None:
+        return ""
     text = text.strip()
-    if text.startswith("```json"): text = text[7:]
-    if text.endswith("```"): text = text[:-3]
-    return text.strip()
+    if not text:
+        return ""
+    # 剥离 markdown 代码块围栏（```json / ```jsonl / ``` 等，含 \r\n 或 \n 结尾）
+    lines = text.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        # 去掉首行围栏（可能带语言标记）
+        lines = lines[1:]
+        # 去掉末尾围栏行
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    if not text:
+        return ""
+    # 兜底：定位第一个 { 与最后一个 }，剥掉两侧解释文字
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start:end + 1]
+    # 连大括号都找不到，说明完全不是 JSON
+    return ""
 
 def truncate_context(text, max_lines=15):
     lines = text.strip().split('\n')
@@ -247,10 +291,16 @@ def detect_missing_context(chat_text, session_name):
         response = client.chat.completions.create(
             model=model_name, messages=messages, temperature=0.1,
         )
-        return json.loads(clean_json(response.choices[0].message.content))
+        cleaned = clean_json(response.choices[0].message.content)
+        if not cleaned:
+            # 模型未返回任何可解析内容，不弹窗，直接跳过追问
+            print("⚠️ 前哨未返回可解析内容，跳过追问")
+            return {"need_context": False, "question": ""}
+        return json.loads(cleaned)
     except Exception as e:
         print(f"检测上下文失败: {e}")
-        return {"need_context": False, "question": ""}
+        # 返回非空 question，前端弹窗不会因空字符串卡死
+        return {"need_context": False, "question": "未可读取，请直接回复。"}
 
 def analyze_chat(chat_text, session_name, image_base64=None, user_mood="平静", user_context="", additional_info="", feedback=""):
     config = load_config()
@@ -373,8 +423,11 @@ def analyze_chat(chat_text, session_name, image_base64=None, user_mood="平静",
     
     messages = [{"role": "system", "content": system_prompt}]
     for msg in context:
-        messages.append({"role": "user", "content": msg["user"]})
-        messages.append({"role": "assistant", "content": msg["assistant"]})
+        # 防御：context 消息字段可能缺失，跳过非法条目
+        u = msg.get("user") if isinstance(msg, dict) else None
+        a = msg.get("assistant") if isinstance(msg, dict) else None
+        if u: messages.append({"role": "user", "content": u})
+        if a: messages.append({"role": "assistant", "content": a})
     
     if image_base64:
         messages.append({"role": "user", "content": user_content})
@@ -386,7 +439,18 @@ def analyze_chat(chat_text, session_name, image_base64=None, user_mood="平静",
         result = json.loads(clean_json(response.choices[0].message.content))
         if "失败" not in result.get("surface_answer", "") and not feedback:
             replies = result.get("replies", [])
-            ai_reply = replies[0]["text"] if replies else "已分析"
+            # 安全取值：AI 可能返回非法格式（缺 text 字段、或 list 里是非 dict 等）
+            ai_reply = "已分析"
+            if isinstance(replies, list) and replies:
+                first = replies[0]
+                if isinstance(first, dict):
+                    ai_reply = first.get("text") or "已分析"
+                elif isinstance(first, str):
+                    ai_reply = first
+                else:
+                    ai_reply = str(first)
+            elif isinstance(replies, str) and replies.strip():
+                ai_reply = replies
             context_user_text = f"[图片分析] {safe_text}" if image_base64 else f"对方说：{safe_text}"
             context.append({"user": context_user_text, "assistant": f"建议回复：{ai_reply}"})
             save_context(context, context_length, session_name, unlimited)
