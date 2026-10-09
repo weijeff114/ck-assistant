@@ -231,7 +231,7 @@ def get_client():
     providers = config.get("custom_providers", {})
     cfg = providers.get(provider_name, list(providers.values())[0])
     
-    base_url = str(cfg.get("base_url", "")).strip()
+    base_url = re.sub(r"\s+", "", str(cfg.get("base_url", "")))
     api_key = str(cfg.get("api_key", "")).strip()
     model_name = str(cfg.get("model", "")).strip()
     
