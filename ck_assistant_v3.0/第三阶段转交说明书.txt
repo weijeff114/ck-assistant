@@ -1,0 +1,91 @@
+================================================================================
+Cf 助手 v3.0 —— 第三阶段（一）AI自动写书与联网查梗 · 转交说明书
+================================================================================
+生成时间 : 2026-10-09
+项目路径 : D:\Projects\ck_assistant_v3.0
+当前提交 : 3eec507（第三阶段（一）：AI自动写书与联网查梗）
+上一提交 : 5504085（最终阶段开始前存档）
+分支     : master（working tree clean，无未提交改动）
+================================================================================
+
+【一、本阶段已完成的功能】
+--------------------------------------------------------------------------------
+1. 「联网搜索」：engine.web_search(query, max_results)
+   - 多引擎自动 fallback：DuckDuckGo → Bing → 百度
+   - 单引擎失败不抛异常，保证主流程不断
+   - 返回结构：list[ {"title", "body", "href"} ]
+
+2. 「AI 自动写书」：engine.auto_write_lorebook_from_topic(
+                             topic, book_name=None, max_results=5)
+   - 流程：搜索主题 → 组装语料（_join_search_text，限长6000字符）→
+           AI 提炼 JSON（description/terms/memes/blacklist）→
+           经 save_lorebook 落盘到世界书配置
+   - 返回：dict { name, description, terms, memes, blacklist, ... }
+           失败返回 {"error": "..."}
+
+3. 「UI 工作台」：ui_lorebook.py 内新增
+   - 输入区：topic_input（QLineEdit）
+   - 按钮：btn_ai("AI自动写书") -> 绑定 self.on_auto_write
+           btn_meme("联网查梗") -> 绑定 self.on_web_meme
+   - 结果区：mode_output（QPlainTextEdit/QTextEdit 只读）
+   - on_auto_write ：调 engine.auto_write_lorebook_from_topic
+   - on_web_meme   ：调 engine.web_search(word, max_results=5)
+                     在子线程执行（避免界面卡死）
+
+4. 新增辅助函数
+   - engine._join_search_text(results, max_chars=6000)
+     把搜索结果拼成一段供 LLM 阅读的语料
+
+【二、关键代码位置】
+--------------------------------------------------------------------------------
+工程结构：
+  main.py           179 行  桌面端入口（线程调度/快捷键/托盘）
+  ui.py             ~903 行 主窗口（含设置/世界书入口）
+  ui_lorebook.py    ~10646 字节 世界书管理弹窗（本阶段核心改动处）
+  ui_settings.py    ~20098 字节 设置弹窗
+  engine.py         ~35538 字节 核心逻辑（本阶段新增函数在此文件）
+  engine_config.py  ~4320 字节 配置读写底层 + 自动迁移
+
+本阶段新增代码锚点（用 grep 定位）：
+  grep "def web_search"         engine.py
+  grep "def auto_write_lorebook_from_topic"  engine.py
+  grep "def _join_search_text"  engine.py
+  grep "def on_auto_write"      ui_lorebook.py
+  grep "def on_web_meme"        ui_lorebook.py
+  grep "import engine"          ui_lorebook.py
+
+【三、验证结果（本阶段已跑通）】
+--------------------------------------------------------------------------------
+1. py_compile 全部通过：
+   engine.py / engine_config.py / ui.py / ui_settings.py / ui_lorebook.py / main.py
+2. 依赖检查通过：duckduckgo_search 可导入，未破坏 httpx/openai（均已在 cf_env 环境）
+3. 函数对齐验证：
+   - engine 侧存在 web_search / auto_write_lorebook_from_topic / search_meme
+   - ui_lorebook 侧按钮事件引用与 engine 实际函数名一致，无断链
+
+【四、尚未做 / 遗留事项（给下一位）】
+--------------------------------------------------------------------------------
+A. 未实际运行 GUI 主流程（为避免弹窗，仅做了模块级验证与 py_compile）
+   -> 建议下一位在真实桌面环境跑 `python main.py` 手动点一遍
+      「AI自动写书」「联网查梗」两个按钮，验证交互与落盘
+
+B. 未做「清理旧世界书逻辑」：
+   - HANDOVER.md 遗留 TODO 提到 ui.py 第 781 行仍有旧类 LorebookManagerDialog
+     （旧单文件式），建议用 ui_lorebook.py 的新 LorebookDialog 替换后删除。
+   - ui.py 顶部对 ui_lorebook 的 import 及世界书入口按钮需人工核对。
+
+C. duckduckgo_search 8.1.1 运行时有 deprecation 警告：
+   "This package (duckduckgo_search) has been renamed to ddgs"
+   -> 无害，但可选迁移到 ddgs 消除警告（需重新 pip install ddgs）
+
+D. 环境说明：依赖装在 conda 环境 `cf_env`，运行前先 `conda activate cf_env`
+
+【五、常用命令备忘】
+--------------------------------------------------------------------------------
+语法检查 : python -m py_compile engine.py ui_lorebook.py engine_config.py ui.py ui_settings.py main.py
+冒烟测试 : python -c "from engine import web_search; print(web_search('测试', 1))"
+环境激活 : conda activate cf_env
+提交格式 : git add . && git commit -m "第三阶段(二): ..."
+================================================================================
+本说明书由第三阶段（一）负责者生成，供下一位继续第二阶段开发。
+================================================================================

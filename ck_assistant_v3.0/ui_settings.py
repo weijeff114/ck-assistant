@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (QApplication, QDialog, QPushButton, QVBoxLayout,
                              QMessageBox, QTextEdit, QFileDialog, QTabWidget,
                              QLabel, QCheckBox, QSlider, QTableWidget,
                              QTableWidgetItem, QHeaderView, QScrollArea, QWidget,
-                             QFrame)
+                             QFrame, QListWidget)
 from PyQt5.QtCore import Qt
 from engine import (load_config, save_config, DEFAULT_CONFIG)
 
