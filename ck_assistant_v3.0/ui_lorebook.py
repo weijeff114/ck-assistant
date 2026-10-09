@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 
 from engine_config import load_config, save_config
+import engine
 
 
 class LorebookDialog(QDialog):
@@ -79,6 +80,30 @@ class LorebookDialog(QDialog):
         form.addRow("雷区", self.black_input)
 
         box = QVBoxLayout(self)
+
+        # [第三阶段] AI自动写书 + 联网查梗 工作台
+        ai_bar = QHBoxLayout()
+        self.topic_input = QLineEdit()
+        self.topic_input.setPlaceholderText("输入主题，如：明日方舟")
+        ai_bar.addWidget(self.topic_input, stretch=3)
+        btn_ai = QPushButton("AI自动写书")
+        btn_ai.setObjectName("primary")
+        btn_ai.clicked.connect(self.on_auto_write)
+        ai_bar.addWidget(btn_ai)
+        self.mode_query = QLineEdit()
+        self.mode_query.setPlaceholderText("输入想查的梗词")
+        ai_bar.addWidget(self.mode_query, stretch=3)
+        btn_meme = QPushButton("联网查梗")
+        btn_meme.setObjectName("primary")
+        btn_meme.clicked.connect(self.on_web_meme)
+        ai_bar.addWidget(btn_meme)
+        box.addLayout(ai_bar)
+        self.mode_output = QTextEdit()
+        self.mode_output.setReadOnly(True)
+        self.mode_output.setPlaceholderText("AI自动写书 / 联网查梗 的结果会显示在这里…")
+        self.mode_output.setMaximumHeight(120)
+        box.addWidget(self.mode_output)
+
         box.addLayout(form)
         box.addWidget(QLabel("会话与启用"))
         box.addWidget(self.session_input)
@@ -179,6 +204,41 @@ class LorebookDialog(QDialog):
         cfg = self._load_config()
         return cfg.get("session_lorebooks", {}).get(
             self.session_input.text().strip() or "默认单聊", [])
+
+    def on_auto_write(self):
+        topic = (self.topic_input.text() or "").strip()
+        if not topic:
+            QMessageBox.warning(self, "提示", "请先输入主题，如：明日方舟")
+            return
+        try:
+            ret = engine.auto_write_lorebook_from_topic(topic)
+        except Exception as ex:
+            self.mode_output.setPlainText("AI 自动写书失败：" + str(ex))
+            return
+        self.refresh_list()
+        self.mode_output.setPlainText(
+            "已生成世界书《%s》（含 %d 个词条）"
+            % (ret.get("name", "未命名"), len(ret.get("terms", {}) or {}))
+        )
+
+    def on_web_meme(self):
+        word = (self.mode_query.text() or "").strip()
+        if not word:
+            QMessageBox.warning(self, "提示", "请输入要查的梗词")
+            return
+        self.mode_output.setPlainText("正在联网查询 “" + word + "” …")
+        import threading
+        def _task():
+            try:
+                res = engine.web_search(word, max_results=5)
+            except Exception as ex:
+                res = [{"title": "查询异常", "body": str(ex), "href": ""}]
+            if not isinstance(res, list):
+                res = []
+            lines = ["%d. %s\n%s\n%s" % (i + 1, r.get("title", ""), r.get("body", ""), r.get("href", ""))
+                     for i, r in enumerate(res[:5])]
+            self.mode_output.setPlainText("\n\n".join(lines) if lines else "没有搜到相关内容")
+        threading.Thread(target=_task, daemon=True).start()
 
 
 def lorebook_prompt_for(book_name="默认", max_terms=20):

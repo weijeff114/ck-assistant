@@ -4,6 +4,8 @@ import json
 import os
 import traceback
 import time
+import html as _html
+import re as _re
 from datetime import datetime
 from openai import OpenAI
 
@@ -649,3 +651,158 @@ def stream_reply(prompt_text, system="你是Cf助手", on_chunk=None):
             if on_chunk:
                 on_chunk(piece)
     return "".join(full)
+
+
+# =========================================================
+# 第三阶段（一）：联网搜索 & AI 自动写书
+# 依赖：duckduckgo_search（免费）；Bing / 百度为兜底，无需 API key
+# =========================================================
+
+def web_search(query, max_results=3):
+    """联网搜索，返回结果列表。每条含 title/body/href。
+
+    搜索顺序：DuckDuckGo（首选，duckduckgo_search 库）→ Bing（兜底）→ 百度（最兜底）。
+    任何引擎失败都不会抛异常，保证主流程不断。
+    """
+    results = []
+    # --- 1) DuckDuckGo（首选）---
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            raw = list(ddgs.text(query, region='cn-zh', safesearch='moderate', max_results=max_results))
+        for item in raw:
+            title = _html.unescape(str(item.get("title", "") or "")).strip()
+            body = _html.unescape(str(item.get("body", "") or "")).strip()
+            href = str(item.get("href", "") or "").strip()
+            if href:
+                results.append({"title": title, "body": body, "href": href})
+        if results:
+            return results
+    except Exception:
+        pass
+
+    # --- 2) Bing 兜底（解析 HTML） ---
+    try:
+        search_url = "https://www.bing.com/search?q=" + _urlparse.quote(query)
+        req = _urlreq.Request(search_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        with _urlreq.urlopen(req, timeout=10) as r:
+            html_doc = r.read().decode("utf-8", errors="ignore")
+        for m in _re.finditer(r'<li class="b_algo".*?</li>', html_doc, _re.S):
+            block = m.group(0)
+            title_m = _re.search(r'<h2><a[^>]+href="([^"]+)"[^>]*>(.*?)</a></h2>', block, _re.S)
+            body_m = _re.search(r'<p>(.*?)</p>', block, _re.S)
+            if title_m:
+                title = _re.sub(r"<[^>]+>", "", title_m.group(2))
+                title = _html.unescape(title).strip()
+                href = _html.unescape(title_m.group(1)).strip()
+                body = ""
+                if body_m:
+                    body = _re.sub(r"<[^>]+>", "", body_m.group(1))
+                    body = _html.unescape(body).strip()
+                results.append({"title": title, "body": body, "href": href})
+            if len(results) >= max_results:
+                break
+        if results:
+            return results
+    except Exception:
+        pass
+
+    # --- 3) 百度 最兜底（解析 HTML） ---
+    try:
+        search_url = "https://www.baidu.com/s?wd=" + _urlparse.quote(query) + "&rn=10"
+        req = _urlreq.Request(search_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        with _urlreq.urlopen(req, timeout=10) as r:
+            html_doc = r.read().decode("utf-8", errors="ignore")
+        count = 0
+        for mm in _re.finditer(r'<h3[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html_doc):
+            href = _html.unescape(mm.group(1)).strip()
+            title = _re.sub(r"<[^>]+>", "", mm.group(2))
+            title = _html.unescape(title).strip()
+            seg = html_doc[mm.end():mm.end() + 600]
+            body = ""
+            body_m = _re.search(r'<div[^>]*class="[^"]*c-abstract[^"]*"[^>]*>(.*?)</div>', seg, _re.S)
+            if body_m:
+                body = _re.sub(r"<[^>]+>", "", body_m.group(1))
+                body = _html.unescape(body).strip()
+            if href:
+                results.append({"title": title, "body": body, "href": href})
+                count += 1
+            if count >= max_results:
+                break
+        if results:
+            return results
+    except Exception:
+        pass
+
+    return results
+
+def _join_search_text(results, max_chars=6000):
+    """把搜索结果拼成一段供 LLM 阅读的语料文本。"""
+    parts = []
+    total = 0
+    for i, r in enumerate(results, 1):
+        title = str(r.get("title", "") or "").strip()
+        body = str(r.get("body", "") or "").strip()
+        href = str(r.get("href", "") or "").strip()
+        seg = f"[{i}] {title}\n{body}\n来源: {href}".strip()
+        if not seg or not title:
+            continue
+        if total + len(seg) > max_chars:
+            continue
+        parts.append(seg)
+        total += len(seg)
+    return "\n\n".join(parts)
+
+def auto_write_lorebook_from_topic(topic, book_name=None, max_results=5):
+    """让 AI 根据「联网搜索到的资料」自动提炼出一本新的世界书（知识包），并落盘保存。"""
+    topic = (topic or "").strip()
+    if not topic:
+        return {"error": "主题不能为空"}
+    hits = web_search(topic, max_results=max_results)
+    if hits:
+        context = _join_search_text(hits)
+    else:
+        context = "（联网搜索未返回有效结果，请基于对该主题的通用知识进行合理归纳。）"
+
+
+    client, model_name = get_client()
+    prompt = (
+        f"你是资料整理大师。请根据以下「联网搜索摘要」围绕主题“{topic}”自动生成一本高质量的世界书（知识包）。\n\n"
+        f"要求提炼以下四块内容，且全部来自参考资料、不要编造：\n"
+        f"1. 核心机制（description）：该主题下游戏/社区的世界观、玩法或底层设定，一段话概括；\n"
+        f"2. 社区黑话（terms）：玩家/成员常用的专有名词、缩写、特殊称谓，每条附带解释；\n"
+        f"3. 热门梗（memes）：社区流行的梗、典故、表情包文化，说明来历和用法；\n"
+        f"4. 雷区（blacklist）：容易引发争议、冒犯他人或平台禁止的事项。\n\n"
+        f"请严格只输出以下JSON结构，不要加```围栏、不要输出任何额外文字：\n"
+        f"{{\n  \"name\": \"{book_name or topic}\",\n  \"description\": \"核心机制一句话概括\",\n  \"blacklist\": \"雷区/禁忌\",\n  \"terms\": {{\"黑话1\": \"解释1\", \"黑话2\": \"解释2\"}},\n  \"memes\": [\"梗1及其来历\", \"梗2及其用法\"],\n  \"jargon\": \"（可选）补充说明\"\n}}\n\n"
+        f"参考资料：\n{context}"
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        return {"error": f"AI 调用失败: {e}"}
+
+    data = stable_json_loads(text)
+    if not isinstance(data, dict):
+        # 清洗围栏再试
+        data = stable_json_loads(text.replace("```json", "").replace("```", "").strip())
+    if not isinstance(data, dict):
+        return {"error": "AI 输出不是合法JSON，请重试或手动创建"}
+
+    data.setdefault("name", book_name or topic)
+    data.setdefault("description", "")
+    data.setdefault("blacklist", "")
+    data.setdefault("terms", {})
+    data.setdefault("memes", [])
+    data.setdefault("jargon", "")
+    data["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    data["_source"] = "AI自动写书"
+    if save_lorebook(data):
+        return data
+    return dict(data, error="写入知识库失败")
+
