@@ -160,6 +160,125 @@ def clear_context(session_name):
         if os.path.exists(file_path): os.remove(file_path)
     except: pass
 
+# =========================================================
+# 【待办1】多世界书（Multi-Lorebook）系统
+# 每个世界书（知识包）是一个独立的 JSON 文件，包含主题介绍 + 词条列表
+# =========================================================
+
+def get_lorebook_dir():
+    """知识包存储目录。"""
+    d = os.path.join(CONFIG_DIR, "lorebooks")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except: pass
+    return d
+
+def get_lorebook_path(book_name):
+    return os.path.join(get_lorebook_dir(), f"{book_name or '默认'}.json")
+
+def load_lorebook(book_name="默认"):
+    """读取指定知识包。文件不存在返回空结构。"""
+    p = get_lorebook_path(book_name)
+    if not os.path.exists(p):
+        return {"name": book_name, "description": "", "terms": {}}
+    try:
+        with open(p, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"name": book_name, "description": "", "terms": {}}
+        data.setdefault("name", book_name)
+        data.setdefault("description", "")
+        data.setdefault("terms", {})
+        return data
+    except Exception:
+        return {"name": book_name, "description": "", "terms": {}}
+
+def save_lorebook(data):
+    """保存知识包。"""
+    try:
+        p = get_lorebook_path(data.get("name", "默认"))
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+def list_lorebooks():
+    """列出所有知识包名。"""
+    d = get_lorebook_dir()
+    result = ["默认"]
+    try:
+        for fn in os.listdir(d):
+            if fn.endswith(".json"):
+                result.append(fn[:-5])
+    except Exception:
+        pass
+    return sorted(set(result))
+
+def add_lorebook_term(book_name, term, content):
+    """向知识包添加一个词条。"""
+    data = load_lorebook(book_name)
+    data["terms"][term] = content
+    return save_lorebook(data)
+
+def remove_lorebook_term(book_name, term):
+    data = load_lorebook(book_name)
+    if term in data["terms"]:
+        del data["terms"][term]
+    return save_lorebook(data)
+
+def delete_lorebook(book_name):
+    try:
+        p = get_lorebook_path(book_name)
+        if os.path.exists(p):
+            os.remove(p)
+        return True
+    except Exception:
+        return False
+
+def auto_write_lorebook(book_name, chat_history, base_description=""):
+    """【待办2】AI 自动写书：让模型根据聊天记录自动生成知识包。"""
+    client, model_name = get_client()
+    history_text = "\n".join(chat_history[-20:]) if chat_history else "（无聊天记录）"
+    prompt = f"""请阅读以下聊天记录，提取里面反复出现的专有名词、人物关系、事件背景等关键设定，
+整理成一本书的格式。请严格输出纯JSON，结构为：
+{{"name": "{book_name}", "description": "这本书的整体世界观/背景一句话概括", "terms": {{"名词1": "解释", "名词2": "解释"}}}}
+
+{base_description_with_guard(base_description)}
+
+聊天记录：
+{history_text}"""
+    try:
+        response = client.chat.completions.create(
+            model=model_name, messages=[{"role": "user", "content": prompt}], temperature=0.3,
+        )
+        cleaned = clean_json(response.choices[0].message.content)
+        data = json.loads(cleaned) if cleaned else {}
+        if isinstance(data, dict):
+            data["name"] = book_name
+            if save_lorebook(data):
+                return data
+        return {"name": book_name, "description": "自动生成失败，请手动补全", "terms": {}}
+    except Exception as e:
+        return {"name": book_name, "description": f"自动生成失败: {e}", "terms": {}}
+
+def base_description_with_guard(desc=""):
+    """辅助函数：自动写书时若提供了背景描述则拼入提示，未提供则留空。"""
+    if desc and desc.strip():
+        return f"背景补充（作者提供）：{desc.strip()}"
+    return "（无额外背景补充）"
+
+def search_meme(term, max_results=3):
+    """【待办3】联网查梗：使用 DuckDuckGo 搜索指定梗词条。"""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(term, max_results=max_results))
+        return [r.get("title", "") + "\n" + r.get("href", "") for r in results]
+    except Exception as e:
+        return [f"查梗失败: {e}"]
+
+
 def load_saves(session_name):
     file_path = get_session_file(session_name, "saves")
     if not os.path.exists(file_path): return []
@@ -460,3 +579,145 @@ def analyze_chat(chat_text, session_name, image_base64=None, user_mood="平静",
         if "localhost" in client.base_url or "127.0.0.1" in client.base_url:
             err_msg = "请检查本地模型服务是否已启动。"
         return {"surface_answer": "分析失败", "surface_probs": {"错误": 100}, "deep_intents": {"无法连接": 100}, "affinity_score": 50, "danger_level": 0, "best_action": err_msg, "action_advice": "无", "replies": [{"style": "稳妥型", "text": "稍后再试。"}]}
+
+
+# =========================================================
+# 【待办功能 1++ 系统】
+# 以下为文档《项目交接与开发文档》中待办模块的完整实现：
+#   1) 多世界书（Multi-Lorebook）
+#   2) AI 自动写书
+#   3) 联网查梗（DuckDuckGo）
+#   4) 情景模拟（新手引导）
+#   5) 流式输出（stream）
+# 全部以独立函数实现，不侵入已有核心逻辑。
+# =========================================================
+
+import base64 as _b64
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+# ---------- 多世界书 & AI自动写书 ----------
+
+def lorebook_prompt_for(book_name="默认", max_terms=20):
+    """把某个知识包拼成可注入 system prompt 的文本。"""
+    data = load_lorebook(book_name)
+    if not data or not data.get("terms"):
+        return ""
+    desc = f"【世界书背景】{data.get('description', '')}\n" if data.get("description") else ""
+    terms = data.get("terms", {})
+    lines = [f"- {k}: {v}" for k, v in list(terms.items())[:max_terms]]
+    return desc + "【世界书词条】\n" + "\n".join(lines) + "\n"
+
+def ask_model(system, user, temperature=0.8):
+    """统一的模型调用封装，返回模型回复文本。"""
+    client, model_name = get_client()
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=temperature,
+    )
+    return response.choices[0].message.content
+
+def stable_json_loads(text):
+    """稳定的 JSON 解析：清洗围栏+提取大括号块，失败返回 None。"""
+    cleaned = clean_json(text)
+    if not cleaned:
+        return None
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+    # 再试：定位第一个 { 到最后一个 }
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1:
+        try:
+            return json.loads(cleaned[start:end + 1])
+        except Exception:
+            return None
+    return None
+
+def auto_sols(chat_text, book_name="默认"):
+    """AI 自动写书：从聊天记录提取设定生成知识包并落盘。"""
+    data = auto_write_lorebook(book_name, [chat_text] if chat_text else [])
+    if data and data.get("terms"):
+        return {"ok": True, "data": data}
+    return {"ok": False, "data": load_lorebook(book_name)}
+
+# ---------- 联网查梗 ----------
+
+def search_ddg(query, max_results=3):
+    """使用 DuckDuckGo 的公共 HTML 接口查梗（无需 API key）。"""
+    results = []
+    try:
+        from bs4 import BeautifulSoup
+        url = "https://html.duckduckgo.com/html/?q=" + _urlparse.quote(query)
+        req = _urlreq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with _urlreq.urlopen(req, timeout=10) as r:
+            html = r.read(100000).decode("utf-8", errors="ignore")
+        soup = BeautifulSoup(html, "html.parser")
+        for a in soup.select(".result__a")[:max_results]:
+            title = a.get_text(strip=True)
+            href = a.get("href", "")
+            if href.startswith("//"):
+                href = "https:" + href
+            results.append(title + " " + href)
+    except Exception as e:
+        results.append(f"查梗失败: {str(e)}")
+    return results if results else ["未找到相关结果"]
+
+# ---------- 情景模拟（新手引导）----------
+
+SCENARIOS = {
+    "初次使用": [
+        "用户是第一次用Cf助手，需要耐心解释每一步操作。",
+        "建议给出一步一步的入门指引。",
+    ],
+    "一个重要考试": [
+        "用户即将参加重要考试，心情紧张，需要鼓励与备考建议。",
+        "回答要兼顾情绪安抚和实际方法。",
+    ],
+    "求职面试": [
+        "用户在准备面试，需要打磨自我介绍和模拟问答。",
+        "回答要专业、具体、可操作。",
+    ],
+}
+
+def scenario_prompt(name="初次使用"):
+    """根据情景名拼接引导提示文本。"""
+    tips = SCENARIOS.get(name)
+    if not tips:
+        return ""
+    return "【情景模拟引导】当前激活情景：" + name + "。\n" + "\n".join(tips) + "\n"
+
+def known_scenarios():
+    return list(SCENARIOS.keys())
+
+# ---------- 流式输出 ----------
+
+def stream_reply(prompt_text, system="你是Cf助手", on_chunk=None):
+    """以流式方式调用模型，逐段回调 on_chunk(文本块)。返回完整文本。"""
+    client, model_name = get_client()
+    stream = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt_text},
+        ],
+        stream=True,
+        temperature=0.85,
+    )
+    full = []
+    for chunk in stream:
+        piece = ""
+        if chunk and getattr(chunk, "choices", None):
+            delta = chunk.choices[0].delta
+            piece = getattr(delta, "content", "") or ""
+        if piece:
+            full.append(piece)
+            if on_chunk:
+                on_chunk(piece)
+    return "".join(full)
