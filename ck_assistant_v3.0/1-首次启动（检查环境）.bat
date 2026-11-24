@@ -1,11 +1,11 @@
 @echo off
 chcp 65001 >nul
-title Cf 助手 v3.0 - 首次运行配置
+title Cf 助手 v3.1 - 首次运行配置
 color 0B
 cd /d "%~dp0"
 
 echo ====================================
-echo   Cf 助手 v3.0 - 首次运行环境检查
+echo   Cf 助手 v3.1 - 首次运行环境检查
 echo ====================================
 echo.
 
@@ -32,7 +32,7 @@ if %errorlevel% neq 0 (
     pause
 )
 echo.
-echo [3/3] 正在启动 Cf 助手 v3.0...
+echo [3/3] 正在启动 Cf 助手 v3.1...
 echo 如果弹出悬浮窗，说明配置成功！
 echo 注意：关闭此黑框或按 Ctrl+C，程序就会退出。
 echo.

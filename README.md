@@ -4,6 +4,8 @@
 
 桌面悬浮窗、网页、Galgame 三种界面，共用同一颗大脑（`engine.py`）。
 
+当前版本：**v3.1**（代码目录仍叫 `ck_assistant_v3.0`，沿用旧路径，免得桌面快捷方式和 bat 失效）。
+
 ![世界书面板](ck_assistant_v3.0/docs/lorebook-dialog.png)
 
 > 上图：v3.1 的世界书面板（列表 / JSON 编辑器 / 启用勾选 / AI 编书 / 新增的联网查梗）。
@@ -48,7 +50,7 @@ python main.py          # 或双击 "2-日常启动（静默版）.bat"
 ## 目录结构
 
 ```
-ck_assistant_v3.0/     ← 当前版本，唯一在维护的目录
+ck_assistant_v3.0/     ← 当前版本（内含 v3.1），唯一在维护的目录
 ck_assistant_v2.4/     ┐
 ck_assistant_v2.3_sp/  │ 历史快照，仅作存档：每个版本是当时的一次
 ck_assistant_v2.3/     │ 完整拷贝，互相之间没有共享代码
@@ -103,6 +105,8 @@ ck_assistant_v1.0/     ┘
 - 修 Bing 兜底正则：`<p class=...>` 导致摘要恒为空
 - 新增 `requirements.txt`，补上缺失的 `beautifulsoup4` / `duckduckgo_search`
 - `README.txt` 与代码对齐（安装、启动、世界书、查梗、代理说明）
+- 界面版本号统一为 v3.1（窗口标题 / 托盘 / 就绪页 / 设置窗口 / 启动脚本）
+- 移除内部交接文档（`HANDOVER.md`、`HANDOVER_DEV.md`、`WORK.txt`、`第三阶段转交说明书.txt`），仓库转为公开
 
 ### v3.0（2026-10）
 

@@ -13,7 +13,7 @@ from engine import (load_config, save_config, DEFAULT_CONFIG)
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Cf 助手 v3.0 设置")
+        self.setWindowTitle("Cf 助手 v3.1 设置")
         self.setFixedSize(750, 850) # 窗口稍微加宽，方便查看
         self.setStyleSheet("""
             QDialog { background-color: #1e1e24; color: #e0e0e0; font-size: 13px; }
