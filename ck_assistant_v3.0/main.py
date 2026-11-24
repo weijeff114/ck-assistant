@@ -1,4 +1,8 @@
-﻿# ================= 【终极护盾】强制屏蔽终端崩溃 =================
+# Cf 助手 / ck-assistant
+# Copyright (c) 2026 Wei Qiguang (weijeff114)
+# SPDX-License-Identifier: GPL-3.0-only
+
+# ================= 【终极护盾】强制屏蔽终端崩溃 =================
 import sys
 from _debug_logger import install_global_logging
 import os

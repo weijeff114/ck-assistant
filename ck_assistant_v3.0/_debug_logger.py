@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# Cf 助手 / ck-assistant
+# Copyright (c) 2026 Wei Qiguang (weijeff114)
+# SPDX-License-Identifier: GPL-3.0-only
+
 """全局异常与日志捕捉模块（非侵入式）。
 在 main.py 顶部调用 install_global_logging() 即可把所有异常、
 Qt 事件循环错误、以及关键函数调用细节写入 debug_log.txt。

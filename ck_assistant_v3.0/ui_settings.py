@@ -1,3 +1,7 @@
+# Cf 助手 / ck-assistant
+# Copyright (c) 2026 Wei Qiguang (weijeff114)
+# SPDX-License-Identifier: GPL-3.0-only
+
 import os
 import sys
 import base64

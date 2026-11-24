@@ -1,3 +1,7 @@
+# Cf 助手 / ck-assistant
+# Copyright (c) 2026 Wei Qiguang (weijeff114)
+# SPDX-License-Identifier: GPL-3.0-only
+
 import sys
 import io
 import json
@@ -102,4 +106,4 @@ def backup_corrupt_file(file_path):
             print(f"⚠️ 检测到损坏的 JSON 文件，已备份为：{backup_path}")
     except Exception as e:
         print(f"⚠️ 备份损坏文件失败: {e}")
-
+
