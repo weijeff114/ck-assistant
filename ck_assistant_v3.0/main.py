@@ -1,5 +1,6 @@
-# ================= 【终极护盾】强制屏蔽终端崩溃 =================
+﻿# ================= 【终极护盾】强制屏蔽终端崩溃 =================
 import sys
+from _debug_logger import install_global_logging
 import os
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 
@@ -47,6 +48,7 @@ class ThreadBridge(QObject):
 
 bridge = ThreadBridge()
 
+install_global_logging()
 app = QApplication(sys.argv)
 window = CfWindow()
 window.show()
@@ -101,6 +103,35 @@ def start_stage2(additional_info):
     threading.Thread(target=stage2_run).start()
 
 def trigger_analysis():
+    try:
+        _trigger_analysis_impl()
+    except Exception:
+        import traceback
+        try:
+            from _debug_logger import log
+            log('=== trigger_analysis 完整traceback ===', level='critical')
+            log(traceback.format_exc(), level='critical')
+        except Exception:
+            pass
+        window.show_status("分析异常，详情见 debug_log.txt", is_error=True)
+
+
+def _trigger_analysis_impl():
+    global is_analyzing, current_chat_image_base64
+    try:
+        from _debug_logger import log
+        log('trigger_analysis_impl 被调用', level='debug')
+        log('attempt1', level='debug')
+        # 调用原实现
+        _impl_body()
+    except Exception:
+        import traceback
+        try:
+            from _debug_logger import log
+            log(traceback.format_exc(), level='critical')
+        except Exception:
+            pass
+def _impl_body():
     global is_analyzing, current_chat_text, current_image_base64
     if is_analyzing:
         window.show_status("⏳ 正在分析中，请稍候...", is_error=True)
@@ -159,10 +190,52 @@ def trigger_analysis():
             else:
                 start_stage2("")
         except Exception as e:
+            try:
+                import traceback as _tb
+                from _debug_logger import log
+                log('=== detect_missing_context 异常(完整栈) ===', level='critical')
+                log(_tb.format_exc(), level='critical')
+            except Exception:
+                pass
             start_stage2("")
 
     threading.Thread(target=stage1_run).start()
 
+def handle_regenerate(reason):
+    """🔄 重新生成：基于上次分析的聊天记录/图片 + 用户反馈，重跑一次分析。"""
+    global is_analyzing
+    if is_analyzing:
+        window.show_status("⏳ 正在分析中，请稍候...", is_error=True)
+        return
+    if not current_chat_text and not current_image_base64:
+        window.show_status("⚠️ 请先进行首次分析，再使用重新生成！", is_error=True)
+        return
+
+    is_analyzing = True
+    window.show_status("🧠 正在根据您的反馈重写...")
+
+    def regen_run():
+        global is_analyzing
+        try:
+            config = load_config()
+            session_name = window.session_combo.currentText()
+            user_mood = window.mood_combo.currentText().strip()
+            user_context = config.get("session_backgrounds", {}).get(session_name, "")
+
+            # 复用上次分析的聊天记录和图片，只替换 feedback
+            result = analyze_chat(current_chat_text, session_name, current_image_base64,
+                                  user_mood, user_context, additional_info="", feedback=reason)
+            bridge.update_ui.emit(result)
+        except Exception as e:
+            bridge.update_ui.emit({"surface_answer": "重写失败", "replies": [],
+                                   "best_action": "重写时出错：" + str(e)})
+        finally:
+            is_analyzing = False
+
+    threading.Thread(target=regen_run, daemon=True).start()
+
+window.regenerate_requested.connect(handle_regenerate)
+window.analyze_requested.connect(trigger_analysis)
 bridge.open_settings.connect(open_settings)
 bridge.trigger_analysis.connect(trigger_analysis)
 bridge.ask_context.connect(handle_ask_context)

@@ -601,12 +601,18 @@ class CfWindow(QWidget):
         browser.setOpenExternalLinks(True)
         browser.setStyleSheet("background: transparent; border: none; color: #E0E0E0; font-size: 13px; line-height: 1.6;")
         html_content = """
-        <h3 style='color: #00E676;'>🚀 Cf 助手 v3.0 使用说明</h3>
+        <h3 style='color: #00E676;'>🚀 Cf 助手 v3.1 使用说明</h3>
         <p><b>🔑 核心快捷键：</b></p>
         <ul>
             <li><b>Ctrl+Shift+J</b>：优先分析输入框内容（含图片）；否则分析剪贴板内容</li>
             <li><b>Ctrl+Shift+S</b>：打开设置面板</li>
             <li><b>Ctrl+Shift+Q</b>：彻底退出 Cf 助手</li>
+        </ul>
+        <p><b>📚 世界书（知识包）：</b></p>
+        <ul>
+            <li>顶栏「书架」打开管理面板：列表 / JSON 编辑器 / 启用勾选</li>
+            <li><b>AI 编书</b>：给个主题，自动联网找资料并生成一本知识包</li>
+            <li><b>联网查梗</b>：查某个黑话的意思，结果可复制进知识包</li>
         </ul>
         <p><b>🎭 v3.0 核心升级：</b></p>
         <ul>
@@ -808,6 +814,15 @@ class LorebookManagerDialog(QDialog):
         self.apply_check = QCheckBox("✅ 作为当前会话启用（保存后立即生效）")
         main.addWidget(self.apply_check)
 
+        # AI 工具行（联网查梗）
+        ai_row = QHBoxLayout()
+        self.btn_meme = QPushButton("🔍 联网查梗")
+        self.btn_meme.setToolTip("联网搜索某个梗/黑话的含义，结果可复制进知识包")
+        self.btn_meme.clicked.connect(self.lookup_meme)
+        ai_row.addWidget(self.btn_meme)
+        ai_row.addStretch(1)
+        main.addLayout(ai_row)
+
         # 按钮行
         btn_row = QHBoxLayout()
         self.btn_refresh = QPushButton("🔄 刷新")
@@ -824,6 +839,10 @@ class LorebookManagerDialog(QDialog):
         btn_row.addWidget(self.btn_new)
         btn_row.addWidget(self.btn_save)
         btn_row.addWidget(self.btn_del)
+        self.btn_ai_book = QPushButton("AI 编书")
+        self.btn_ai_book.setToolTip("输入主题，AI 联网搜索并自动生成一本世界书")
+        self.btn_ai_book.clicked.connect(self.ai_book)
+        btn_row.addWidget(self.btn_ai_book)
         btn_row.addWidget(self.btn_close)
         main.addLayout(btn_row)
 
@@ -901,3 +920,77 @@ class LorebookManagerDialog(QDialog):
             self.refresh_list()
             self.editor.clear()
             QMessageBox.information(self, "完成", f"✅ 已删除知识包《{name}》")
+
+    def ai_book(self):
+        """AI 自动编书：输入主题，联网搜索收集资料，自动生成并保存一本新世界书。"""
+        topic, ok = QInputDialog.getText(self,
+            "AI 编书",
+            "请输入主题（例如：王者荣耀 孙尚香、明日方舟 世界观、某主播的梗）")
+        if not ok or not topic.strip():
+            return
+        topic = topic.strip()
+
+        book_name, ok2 = QInputDialog.getText(self,
+            "AI 编书",
+            "给这本世界书起个名字（留空则使用主题名）：",
+            text=topic)
+        book_name = (book_name.strip() if ok2 and book_name.strip() else topic)
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            from engine import auto_write_lorebook_from_topic
+            result = auto_write_lorebook_from_topic(topic, book_name=book_name)
+        except Exception as exc:
+            result = {"error": f"{exc}"}
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if not isinstance(result, dict) or result.get("error"):
+            QMessageBox.warning(self, "AI 编书失败",
+                (result if isinstance(result, dict) else {}).get("error", "未知错误"))
+            return
+
+        name = result.get("name") or book_name
+        self.list_w.addItem(name)
+        self.editor.setPlainText(self._json.dumps(result, ensure_ascii=False, indent=2))
+        self._current = name
+        QMessageBox.information(self, "AI 编书",
+            "已生成世界书“" + name + "”并保存！\n内容已加载到编辑器，可继续编辑后保存。")
+
+    def lookup_meme(self):
+        """联网查梗：搜索某个梗/黑话的含义，只读展示，可复制进知识包。"""
+        word, ok = QInputDialog.getText(self, "联网查梗",
+            "要查的词（梗 / 黑话 / 角色名）：")
+        if not ok or not word.strip():
+            return
+        word = word.strip()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            from engine import web_search
+            results = web_search(word, max_results=5)
+        except Exception as exc:
+            results = [{"title": "查询失败", "body": str(exc), "href": ""}]
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        lines = []
+        for i, r in enumerate(results or [], 1):
+            title = (r.get("title") or "").strip()
+            body = (r.get("body") or "").strip()
+            href = (r.get("href") or "").strip()
+            lines.append("%d. %s\n%s\n%s" % (i, title, body, href))
+        text = "\n\n".join(lines) if lines else "没有搜到相关内容（检查网络或换个关键词）"
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("📖 查梗结果：" + word)
+        dlg.resize(600, 480)
+        lay = QVBoxLayout(dlg)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText(text)
+        lay.addWidget(view)
+        btn_ok = QPushButton("关闭")
+        btn_ok.clicked.connect(dlg.accept)
+        lay.addWidget(btn_ok)
+        dlg.exec_()
+

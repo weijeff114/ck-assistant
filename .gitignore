@@ -1,4 +1,4 @@
-﻿
+
 # ===== 编译缓存 =====
 __pycache__/
 *.py[cod]
@@ -26,3 +26,19 @@ test_result.txt
 *.env
 .env
 config.json
+
+# ===== 手工备份与临时脚本 =====
+*.bak
+*.bak_*
+*.orig
+_fix*.py
+_patch*.py
+_apply_log.py
+_inspect_*.py
+_inspect_*.txt
+_test_*.py
+test_api.py
+_main_*.txt
+_ui_sigs.txt
+dup.txt
+
